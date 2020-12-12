@@ -16,6 +16,6 @@ make
 ```
 
 ## Interaction example
-  ![image](https://imgur.com/1ugUixn)
-  ![image](https://imgur.com/jxKyPhQ)
-  ![image](https://imgur.com/RzzHZ9Z)
+  ![image](https://i.imgur.com/1ugUixn.png)
+  ![image](https://i.imgur.com/jxKyPhQ.png)
+  ![image](https://i.imgur.com/RzzHZ9Z.png)
