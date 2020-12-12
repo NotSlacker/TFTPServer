@@ -186,8 +186,11 @@ int send_file(int sock_fd, struct sockaddr *client_addr, FILE *file_h, char *mod
     uint16_t block_num = 1;
     unsigned int attempt_counter = 0;
 
+    int is_retry = 0;
+
     do {
-        n = read_data(buffer, MAX_DATA_SIZE, file_h, !strcmp(mode, "netascii"));
+        if (!is_retry)
+            n = read_data(buffer, MAX_DATA_SIZE, file_h, !strcmp(mode, "netascii"));
 
         if (DEBUG)
             printf("Sending DATA: [%u] ", block_num);
@@ -237,6 +240,15 @@ int recv_file(int sock_fd, struct sockaddr *client_addr, FILE *file_h, char *mod
                 printf("Attempts limit exceeded\n");
                 return 0;
             }
+            
+            if (DEBUG)
+                printf("Sending ACK: [%u] ", block_num - 1);
+
+            if (!send_ack(sock_fd, client_addr, block_num - 1))
+                return 0;
+
+            if (DEBUG)
+                printf("Sent\n");
         } else if (packet.opcode == TFTP_OPCODE_ERROR) {
             print_error(&packet);
             return 0;
