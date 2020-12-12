@@ -1,4 +1,4 @@
-# TFTP Server
+## TFTP Server
 
 Here's an implementation of a server using TFTP for data exchange.
 TFTP is a data transfer protocol that is written in accordance with RFC 1350, in which it is described.
