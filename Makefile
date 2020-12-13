@@ -14,10 +14,10 @@ clean:
 test/all: test/small test/medium test/large
 
 test/small:
-	dd if=/dev/random of=$@ bs=100 count=1 iflag=fullblock
+	dd if=/dev/random of=$@ bs=1M count=1
 
 test/medium:
-	dd if=/dev/random of=$@ bs=1000 count=10 iflag=fullblock
+	dd if=/dev/random of=$@ bs=1M count=5
 
 test/large:
-	dd if=/dev/random of=$@ bs=10000 count=100 iflag=fullblock
+	dd if=/dev/random of=$@ bs=1M count=15
