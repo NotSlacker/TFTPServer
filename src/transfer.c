@@ -153,7 +153,7 @@ size_t write_data(char *buffer, size_t n, FILE *file_h, int convert) {
     if (convert == 0)
         return fwrite(buffer, 1, n, file_h);
 
-    int pos = 0;
+    size_t pos = 0;
     int skip = 0;
 
     static char prev = 'p';

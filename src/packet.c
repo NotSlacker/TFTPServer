@@ -6,7 +6,10 @@ packet_t *deserialize_packet(char *buffer, size_t buffer_size, packet_t *packet)
 
     memset(packet, 0, sizeof(packet_t));
 
-    switch (packet->opcode = ntohs(*(uint16_t *)buffer)) {
+    uint16_t temp = 0;
+    memcpy(&temp, buffer, 2);
+
+    switch (packet->opcode = ntohs(temp)) {
     case TFTP_OPCODE_RRQ:
         strncpy(packet->read.filename, buffer + 2, MAX_STRING_SIZE);
         strncpy(packet->read.mode, buffer + 2 + strlen(packet->read.filename) + 1, MAX_MODE_SIZE);
@@ -16,15 +19,18 @@ packet_t *deserialize_packet(char *buffer, size_t buffer_size, packet_t *packet)
         strncpy(packet->write.mode, buffer + 2 + strlen(packet->write.filename) + 1, MAX_MODE_SIZE);
         break;
     case TFTP_OPCODE_DATA:
-        packet->data.block_num = ntohs(*((uint16_t *)buffer + 1));
+        memcpy(&temp, buffer + 2, 2);
+        packet->data.block_num = ntohs(temp);
         packet->data.data_size = buffer_size - 4;
         memcpy(packet->data.data, buffer + 4, packet->data.data_size);
         break;
     case TFTP_OPCODE_ACK:
-        packet->ack.block_num = ntohs(*((uint16_t *)buffer + 1));
+        memcpy(&temp, buffer + 2, 2);
+        packet->ack.block_num = ntohs(temp);
         break;
     case TFTP_OPCODE_ERROR:
-        packet->error.ercode = ntohs(*((uint16_t *)buffer + 1));
+        memcpy(&temp, buffer + 2, 2);
+        packet->error.ercode = ntohs(temp);
         strncpy(packet->error.message, buffer + 4, MAX_STRING_SIZE);
         break;
     default:
@@ -39,19 +45,24 @@ size_t serialize_packet(const packet_t *packet, char *buffer) {
         return 0;
 
     size_t n = 4;
-	*(uint16_t *)buffer = htons(packet->opcode);
+
+    uint16_t temp = htons(packet->opcode);
+    memcpy(buffer, &temp, 2);
 
     switch (packet->opcode) {
     case TFTP_OPCODE_DATA:
-	    *((uint16_t *)buffer + 1) = htons(packet->data.block_num);
+        temp = htons(packet->data.block_num);
+        memcpy(buffer + 2, &temp, 2);
         memcpy(buffer + 4, packet->data.data, packet->data.data_size);
         n += packet->data.data_size;
         break;
     case TFTP_OPCODE_ACK:
-	    *((uint16_t *)buffer + 1) = htons(packet->ack.block_num);
+        temp = htons(packet->ack.block_num);
+        memcpy(buffer + 2, &temp, 2);
         break;
     case TFTP_OPCODE_ERROR:
-	    *((uint16_t *)buffer + 1) = htons(packet->error.ercode);
+        temp = htons(packet->error.ercode);
+        memcpy(buffer + 2, &temp, 2);
         strncpy(buffer + 4, packet->error.message, MAX_STRING_SIZE);
         n += strlen(buffer + 4) + 1;
         break;
