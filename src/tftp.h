@@ -7,9 +7,9 @@
 #include <string.h>
 
 #include <arpa/inet.h>
-#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/poll.h>
 #include <unistd.h>
 
 #include "packet.h"
@@ -19,7 +19,7 @@
 
 #define TFTP_MAX_CLIENTS 100
 #define TFTP_MAX_ATTEMPTS 5
-#define TFTP_ATTEMPT_TIMEOUT 5
+#define TFTP_ATTEMPT_TIMEOUT 3
 
 #define TFTP_MODE_OCTET "octet"
 #define TFTP_MODE_NETASCII "netascii"

@@ -97,43 +97,53 @@ void transfer_loop(int sock_fd) {
 
     printf("Server is running\n");
 
+    struct pollfd pfd[1];
+    pfd[0].fd = sock_fd;
+    pfd[0].events = POLLIN;
+    pfd[0].revents = 0;
+
     while (1) {
         memset(buffer, 0, BUFFER_SIZE);
 
-        recv_size = recvfrom(sock_fd, buffer, BUFFER_SIZE, 0, &client_addr, (socklen_t *)&client_size);
+        if (poll(pfd, 1, -1) > 0) {
+            recv_size = recvfrom(sock_fd, buffer, BUFFER_SIZE, 0, &client_addr, (socklen_t *)&client_size);
 
-        if (recv_size < 0) {
-            perror("Error in recvfrom:");
-            exit(1);
-        }
+            if (recv_size < 0) {
+                perror("Error in recvfrom:");
+                exit(1);
+            }
 
-        if (recv_size == 0) {
-            printf("Socket closed\n");
-            exit(0);
-        }
+            if (recv_size == 0) {
+                printf("Socket closed\n");
+                exit(0);
+            }
 
-        if (child_counter < TFTP_MAX_CLIENTS) {
-            deserialize_packet(buffer, recv_size, &packet);
-            fork_id = fork();
+            if (child_counter < TFTP_MAX_CLIENTS) {
+                deserialize_packet(buffer, recv_size, &packet);
+                fork_id = fork();
+            } else {
+                send_error(sock_fd, &client_addr, TFTP_ERROR_NOT_DEFINED, "Too many clients");
+                continue;
+            }
+
+            if (fork_id < 0) {
+                send_error(sock_fd, &client_addr, TFTP_ERROR_NOT_DEFINED, "Unable to handle request");
+                exit(1);
+            } else if (fork_id == 0) {
+                close(sock_fd);
+                
+                if (DEBUG)
+                    print_packet(&packet);
+
+                child_counter++;
+                process_child(client_addr, &packet);
+                child_counter--;
+
+                exit(0);
+            }
         } else {
-            send_error(sock_fd, &client_addr, TFTP_ERROR_NOT_DEFINED, "Too many clients");
-            continue;
-        }
-
-        if (fork_id < 0) {
-            send_error(sock_fd, &client_addr, TFTP_ERROR_NOT_DEFINED, "Unable to handle request");
+            perror("Error in poll");
             exit(1);
-        } else if (fork_id == 0) {
-            close(sock_fd);
-            
-            if (DEBUG)
-                print_packet(&packet);
-
-            child_counter++;
-            process_child(client_addr, &packet);
-            child_counter--;
-
-            exit(0);
         }
     }
 

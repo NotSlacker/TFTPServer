@@ -19,32 +19,14 @@ int connect_socket_on(int port) {
     return sock_fd;
 }
 
-void catch_alarm(int foo) {
-    return;
-}
-
 int wait_for_packet(int sock_fd, struct sockaddr *client_addr, uint16_t opcode, packet_t *packet) {
     size_t n;
     size_t client_size = sizeof(client_addr);
     
     char buffer[BUFFER_SIZE];
-    struct sigaction action;
 
-    action.sa_handler = catch_alarm;
-    if (sigfillset(&action.sa_mask) < 0) {
-        if (DEBUG)
-            printf("Can not set sighandler\n");
-        return -1;
-    }
-
-    action.sa_flags = 0;
-    if (sigaction(SIGALRM, &action, 0) < 0) {
-        if (DEBUG)
-            printf("Can not set sigalarm\n");
-        return -1;
-    }
-
-    alarm(TFTP_ATTEMPT_TIMEOUT);
+    int retval = 0;
+    struct pollfd pfd[1] = { { sock_fd, POLLIN, 0 } };
 
     errno = 0;
     while (1) {
@@ -53,18 +35,17 @@ int wait_for_packet(int sock_fd, struct sockaddr *client_addr, uint16_t opcode, 
         
         fflush(stdout);
 
-        n = recvfrom(sock_fd, buffer, BUFFER_SIZE, 0, client_addr, (socklen_t *)&client_size);
-        
-        if (errno != 0) {
-            if (errno == EINTR) {
-                if (DEBUG)
-                    printf("Timeout detected\n");
-            } else {
-                if (DEBUG)
-                    printf("Error with value <%d>\n", errno);
-            }
+        retval = poll(pfd, 1, TFTP_ATTEMPT_TIMEOUT * 1000u);
 
-            alarm(0);
+        if (retval > 0) {
+            n = recvfrom(sock_fd, buffer, BUFFER_SIZE, 0, client_addr, (socklen_t *)&client_size);
+        } else if (retval == 0) {
+            if (DEBUG)
+                printf("Timeout detected\n");
+            return -1;
+        } else {
+            if (DEBUG)
+                printf("Error with value <%d>\n", errno);
             return -1;
         }
 
@@ -72,15 +53,12 @@ int wait_for_packet(int sock_fd, struct sockaddr *client_addr, uint16_t opcode, 
             printf("Done\n");
 
         if (deserialize_packet(buffer, n, packet) == NULL) {
-            alarm(0);
             return -1;
         }
 
         if (packet->opcode == opcode) {
-            alarm(0);
             return n;
         } else if (packet->opcode == TFTP_OPCODE_ERROR) {
-            alarm(0);
             return 0;
         }
     }
@@ -89,7 +67,7 @@ int wait_for_packet(int sock_fd, struct sockaddr *client_addr, uint16_t opcode, 
 int send_packet(int sock_fd, struct sockaddr *sock_info, packet_t *packet) {
     char buffer[BUFFER_SIZE];
     size_t n = serialize_packet(packet, buffer);
-    return sendto(sock_fd, buffer, n, 0, (struct sockaddr *)sock_info, sizeof(struct sockaddr)) >= 0;
+    return sendto(sock_fd, buffer, n, MSG_DONTWAIT, (struct sockaddr *)sock_info, sizeof(struct sockaddr)) >= 0;
 }
 
 int send_data(int sock_fd, struct sockaddr *sock_info, uint16_t block_num, char *data, size_t data_size) {
