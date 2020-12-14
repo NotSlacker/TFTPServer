@@ -97,10 +97,7 @@ void transfer_loop(int sock_fd) {
 
     printf("Server is running\n");
 
-    struct pollfd pfd[1];
-    pfd[0].fd = sock_fd;
-    pfd[0].events = POLLIN;
-    pfd[0].revents = 0;
+    struct pollfd pfd[1] = { { sock_fd, POLLIN, 0 } };
 
     while (1) {
         memset(buffer, 0, BUFFER_SIZE);
