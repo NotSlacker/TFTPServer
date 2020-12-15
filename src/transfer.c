@@ -1,123 +1,28 @@
-#include "tftp.h"
+#include "transfer.h"
 
-int connect_socket_on(int port) {
-    int sock_fd;
-    struct sockaddr_in serv_addr;
+size_t read_data(char *buffer, size_t n, client_t *cl) {
+    bzero(buffer, n);
 
-    if ((sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-        return -1;
-
-    memset((char *)&serv_addr, 0, sizeof(serv_addr));
-
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port);
-    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(sock_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-        return -1;
-    
-    return sock_fd;
-}
-
-int wait_for_packet(int sock_fd, struct sockaddr *client_addr, uint16_t opcode, packet_t *packet) {
-    size_t n;
-    size_t client_size = sizeof(client_addr);
-    
-    char buffer[BUFFER_SIZE];
-
-    int retval = 0;
-    struct pollfd pfd[1] = { { sock_fd, POLLIN, 0 } };
-
-    errno = 0;
-    while (1) {
-        if (DEBUG)
-            printf("Waiting for response... ");
-        
-        fflush(stdout);
-
-        retval = poll(pfd, 1, TFTP_ATTEMPT_TIMEOUT * 1000u);
-
-        if (retval > 0) {
-            n = recvfrom(sock_fd, buffer, BUFFER_SIZE, 0, client_addr, (socklen_t *)&client_size);
-        } else if (retval == 0) {
-            if (DEBUG)
-                printf("Timeout detected\n");
-            return -1;
-        } else {
-            if (DEBUG)
-                printf("Error with value <%d>\n", errno);
-            return -1;
-        }
-
-        if (DEBUG)
-            printf("Done\n");
-
-        if (deserialize_packet(buffer, n, packet) == NULL) {
-            return -1;
-        }
-
-        if (packet->opcode == opcode) {
-            return n;
-        } else if (packet->opcode == TFTP_OPCODE_ERROR) {
-            return 0;
-        }
-    }
-}
-
-int send_packet(int sock_fd, struct sockaddr *sock_info, packet_t *packet) {
-    char buffer[BUFFER_SIZE];
-    size_t n = serialize_packet(packet, buffer);
-    return sendto(sock_fd, buffer, n, MSG_DONTWAIT, (struct sockaddr *)sock_info, sizeof(struct sockaddr)) >= 0;
-}
-
-int send_data(int sock_fd, struct sockaddr *sock_info, uint16_t block_num, char *data, size_t data_size) {
-    packet_t packet;
-    packet.opcode = TFTP_OPCODE_DATA;
-    packet.data.block_num = block_num;
-    packet.data.data_size = data_size;
-    memcpy(packet.data.data, data, data_size);
-    return send_packet(sock_fd, sock_info, &packet);
-}
-
-int send_ack(int sock_fd, struct sockaddr *sock_info, uint16_t block_num) {
-    packet_t packet;
-    packet.opcode = TFTP_OPCODE_ACK;
-    packet.ack.block_num = block_num;
-    return send_packet(sock_fd, sock_info, &packet);
-}
-
-int send_error(int sock_fd, struct sockaddr *sock_info, uint16_t ercode, char *message) {
-    packet_t packet;
-    packet.opcode = TFTP_OPCODE_ERROR;
-    packet.error.ercode = ercode;
-    strncpy(packet.error.message, message, MAX_STRING_SIZE);
-    return send_packet(sock_fd, sock_info, &packet);
-}
-
-size_t read_data(char *buffer, size_t n, FILE *file_h, int convert) {
-    if (convert == 0)
-        return fread(buffer, 1, n, file_h);
-
-    size_t total = 0;
-    static int tail = 0;
+    if (cl->mode == 0)
+        return fread(buffer, 1, n, cl->file);
 
     int curr;
-    static int prev;
+    size_t total = 0;
     
     while (total < n) {
-        if (tail) {
-            curr = (prev == '\n') ? '\n' : '\0';
-            tail = 0;
+        if (cl->is_tail) {
+            curr = cl->prev == '\n' ? '\n' : '\0';
+            cl->is_tail = 0;
         } else {
-            curr = fgetc(file_h);
+            curr = fgetc(cl->file);
             
             if (curr == EOF)
                 break;
             
             if (curr == '\n' || curr == '\r') {
-                prev = curr;
+                cl->prev = curr;
                 curr = '\r';
-                tail = 1;
+                cl->is_tail = 1;
             }
         }
 
@@ -127,136 +32,226 @@ size_t read_data(char *buffer, size_t n, FILE *file_h, int convert) {
     return total;
 }
 
-size_t write_data(char *buffer, size_t n, FILE *file_h, int convert) {
-    if (convert == 0)
-        return fwrite(buffer, 1, n, file_h);
+size_t write_data(char *buffer, size_t n, client_t *cl) {
+    if (cl->mode == 0)
+        return fwrite(buffer, 1, n, cl->file);
 
     size_t pos = 0;
     int skip = 0;
 
-    static char prev = 'p';
-    
     while (pos < n) {
-        if (prev == '\r') {
+        if (cl->prev == '\r') {
             if (buffer[pos] == '\n')
-                fseek(file_h, -1, SEEK_CUR);
+                fseek(cl->file, -1, SEEK_CUR);
             else if (buffer[pos] == '\0')
                 skip = 1;
         }
         
         if (!skip)
-            fputc(buffer[pos], file_h);
+            fputc(buffer[pos], cl->file);
         else
             skip = 0;
 
-        prev = buffer[pos++];
+        cl->prev = buffer[pos++];
     }
     
-    return n;
+    return pos;
 }
 
-int send_file(int sock_fd, struct sockaddr *client_addr, FILE *file_h, char *mode) {
-    size_t n;
-    char buffer[MAX_DATA_SIZE];
+void handle_recv(int sock_fd, client_t *client[], size_t *nclient) {
+    printf("receiving... ");
 
-    packet_t packet;
+    struct sockaddr_in addr;
+    socklen_t addrlen = sizeof(addr);
 
-    uint16_t block_num = 1;
-    unsigned int attempt_counter = 0;
+    size_t nbuffer = 0;
+    char buffer[BUFFER_SIZE];
 
-    int is_retry = 0;
+    int nrecv;
+    if ((nrecv = recvfrom(sock_fd, buffer, BUFFER_SIZE, MSG_DONTWAIT, (struct sockaddr *)&addr, &addrlen)) < 0) {
+        perror("handle_recv: recvfrom");
+        return;
+    }
 
-    do {
-        if (!is_retry)
-            n = read_data(buffer, MAX_DATA_SIZE, file_h, !strcmp(mode, "netascii"));
-
-        if (DEBUG)
-            printf("Sending DATA: [%u] ", block_num);
-
-        if (!send_data(sock_fd, client_addr, block_num, buffer, n))
-            return 0;
-
-        if (DEBUG)
-            printf("Sent\n");
-
-        if (wait_for_packet(sock_fd, client_addr, TFTP_OPCODE_ACK, &packet) == -1) {
-            if (++attempt_counter >= TFTP_MAX_ATTEMPTS) {
-                printf("Attempts limit exceeded\n");
-                return 0;
+    client_t *cl;
+    if ((cl = cl_find(addr, client, *nclient)) == NULL) {
+        if (*nclient < TFTP_MAX_CLIENTS) {
+            if ((cl = cl_create(addr)) != NULL) {
+                client[*nclient] = cl;
+                *nclient += 1;
+                printf("added active client\n");
+                printf("%lu active clients so far\n", *nclient);
             }
-        } else {
-            if (packet.opcode == TFTP_OPCODE_ERROR) {
-                print_error(&packet);
-                return 0;
-            }
-
-            if (packet.ack.block_num != block_num) {
-                if (DEBUG)
-                    printf("Expected block [%u], but block [%u] recieved\n", block_num, packet.data.block_num);
-                
-                send_error(sock_fd, client_addr, TFTP_ERROR_UNKNOWN_TRANSFER_ID, "Wrong block number");
-                return 0;
-            }
-
-            block_num++;
-            attempt_counter = 0;
         }
-    } while (n == MAX_DATA_SIZE);
+    }
 
-    return 1;
-}
+    packet_t req;
+    nbuffer = nrecv;
 
-int recv_file(int sock_fd, struct sockaddr *client_addr, FILE *file_h, char *mode) {
-    packet_t packet;
+    if (deserialize_packet(buffer, nbuffer, &req) == NULL) {
+        return;
+    }
 
-    uint16_t block_num = 1;
-    unsigned int attempt_counter = 0;
+    if (req.opcode == TFTP_OPCODE_RRQ && cl->is_first) {
+        if (strncasecmp(req.read.mode, TFTP_MODE_OCTET, MAX_MODE_SIZE) != 0 &&
+            strncasecmp(req.read.mode, TFTP_MODE_NETASCII, MAX_MODE_SIZE) != 0) {
+            make_error(cl->last, TFTP_ERROR_ILLEGAL_OPERATION, "unsupported mode");
+            cl->state = ERROR;
+            return;
+        }
 
-    do {
-        if (wait_for_packet(sock_fd, client_addr, TFTP_OPCODE_DATA, &packet) == -1) {
-            if (++attempt_counter >= TFTP_MAX_ATTEMPTS) {
-                printf("Attempts limit exceeded\n");
-                return 0;
-            }
-            
-            if (DEBUG)
-                printf("Sending ACK: [%u] ", block_num - 1);
-
-            if (!send_ack(sock_fd, client_addr, block_num - 1))
-                return 0;
-
-            if (DEBUG)
-                printf("Sent\n");
-        } else if (packet.opcode == TFTP_OPCODE_ERROR) {
-            print_error(&packet);
-            return 0;
-        } else {
-            if (packet.data.block_num == block_num) {
-                if (write_data(packet.data.data, packet.data.data_size, file_h, !strcmp(mode, "netascii"))) {
-                    block_num++;
-                    attempt_counter = 0;
-                } else if (packet.data.data_size != 0) {
-                    send_error(sock_fd, client_addr, TFTP_ERROR_NOT_DEFINED, "No data to write");
-                    return 0;
+        if (access(req.read.filename, F_OK) == 0) {
+            if ((cl->file = fopen(req.read.filename, "rb")) == NULL) {
+                if (errno == ENOMEM) {
+                    make_error(cl->last, TFTP_ERROR_DISK_FULL, strerror(errno));
+                } else {
+                    make_error(cl->last, TFTP_ERROR_ACCESS_VIOLATION, strerror(errno));
                 }
-
-                if (DEBUG)
-                    printf("Sending ACK: [%u] ", packet.data.block_num);
-
-                if (!send_ack(sock_fd, client_addr, packet.data.block_num))
-                    return 0;
-
-                if (DEBUG)
-                    printf("Sent\n");
-            } else {
-                if (DEBUG)
-                    printf("Expected block [%u], but block [%u] recieved\n", block_num, packet.data.block_num);
-
-                send_error(sock_fd, client_addr, TFTP_ERROR_UNKNOWN_TRANSFER_ID, "Wrong block number");
-                return 0;
+                cl->state = ERROR;
+                return;
             }
+        } else {
+            make_error(cl->last, TFTP_ERROR_FILE_NOT_FOUND, "file not found");
+            cl->state = ERROR;
+            return;
         }
-    } while (packet.data.data_size == MAX_DATA_SIZE);
 
-    return 1;
+        cl->mode = !strcmp(req.read.mode, "netascii");
+        nbuffer = read_data(buffer, MAX_DATA_SIZE, cl);
+
+        make_data(cl->last, buffer, nbuffer, 1);
+        cl->nrep = 0;
+        cl->nout = 0;
+        cl->is_first = 0;
+        cl->state = READY;
+    } else if (req.opcode == TFTP_OPCODE_WRQ && cl->is_first) {
+        if (strncasecmp(req.write.mode, TFTP_MODE_OCTET, MAX_MODE_SIZE) != 0 &&
+            strncasecmp(req.write.mode, TFTP_MODE_NETASCII, MAX_MODE_SIZE) != 0) {
+            make_error(cl->last, TFTP_ERROR_ILLEGAL_OPERATION, "unsupported mode");
+            cl->state = ERROR;
+            return;
+        }
+        if (access(req.write.filename, F_OK) != 0) {
+            if ((cl->file = fopen(req.write.filename, "wb")) == NULL) {
+                if (errno == ENOMEM) {
+                    make_error(cl->last, TFTP_ERROR_DISK_FULL, strerror(errno));
+                } else {
+                    make_error(cl->last, TFTP_ERROR_ACCESS_VIOLATION, strerror(errno));
+                }
+                cl->state = ERROR;
+                return;
+            }
+        } else {
+            make_error(cl->last, TFTP_ERROR_FILE_ALREADY_EXISTS, "file already exists");
+            cl->state = ERROR;
+            return;
+        }
+
+        cl->mode = !strcmp(req.write.mode, "netascii");
+
+        make_ack(cl->last, 0);
+        cl->nrep = 0;
+        cl->nout = 0;
+        cl->is_first = 0;
+        cl->state = READY;
+    } else if (req.opcode == TFTP_OPCODE_DATA && !cl->is_first) {
+        printf("received DATA block [%hu] of %lu bytes\n", req.data.nblock, req.data.nbuffer);
+        if (req.data.nblock == cl->last->ack.nblock + 1) {
+            nbuffer = write_data(req.data.buffer, req.data.nbuffer, cl);
+            cl->is_last = req.data.nbuffer < MAX_DATA_SIZE;
+            make_ack(cl->last, req.data.nblock);
+            cl->nrep = 0;
+            cl->nout = 0;
+            cl->state = READY;
+        } else if (req.data.nblock == cl->last->ack.nblock) {
+            cl->nout = 0;
+            cl->state = RETRY;
+        } else {
+            make_error(cl->last, TFTP_ERROR_UNKNOWN_TRANSFER_ID, "wrong block number");
+            cl->state = ERROR;
+            return;
+        }
+    } else if (req.opcode == TFTP_OPCODE_ACK && !cl->is_first) {
+        printf("received ACK block [%hu]\n", req.ack.nblock);
+        if (cl->is_last) {
+            cl->is_active = 0;
+            return;
+        }
+        if (req.ack.nblock == cl->last->data.nblock) {
+            nbuffer = read_data(buffer, MAX_DATA_SIZE, cl);
+            cl->is_last = nbuffer < MAX_DATA_SIZE;
+            make_data(cl->last, buffer, nbuffer, req.ack.nblock + 1);
+            cl->nrep = 0;
+            cl->nout = 0;
+            cl->state = READY;
+        } else if (req.ack.nblock + 1 == cl->last->data.nblock) {
+            cl->nout = 0;
+            cl->state = RETRY;
+        } else {
+            make_error(cl->last, TFTP_ERROR_UNKNOWN_TRANSFER_ID, "wrong block number");
+            cl->state = ERROR;
+            return;
+        }
+    } else if (req.opcode == TFTP_OPCODE_ERROR && !cl->is_first) {
+        printf("received ERROR code [%hu]\n", req.error.nerror);
+        print_error(&req);
+        cl->is_active = 0;
+        return;
+    } else {
+        make_error(cl->last, TFTP_ERROR_ILLEGAL_OPERATION, "unknown operation");
+        cl->state = ERROR;
+        return;
+    }
+}
+
+void handle_send(int sock_fd, client_t *cl) {
+    if (cl->is_active == 0 || cl->state == WAIT) {
+        return;
+    }
+
+    printf("sending... ");
+
+    size_t nbuffer = 0;
+    char buffer[BUFFER_SIZE];
+
+    nbuffer = serialize_packet(cl->last, buffer);
+    if (sendto(sock_fd, buffer, nbuffer, 0, (struct sockaddr *)&cl->addr, cl->addrlen) < 0) {
+        perror("handle_send: sendto");
+        return;
+    }
+
+    if (cl->last->opcode == TFTP_OPCODE_DATA) {
+        printf("sent DATA block [%hu] of %lu bytes\n", cl->last->data.nblock, cl->last->data.nbuffer);
+    } else if (cl->last->opcode == TFTP_OPCODE_ACK) {
+        printf("sent ACK block [%hu]\n", cl->last->ack.nblock);
+        if (cl->is_last) {
+            cl->is_active = 0;
+        }
+    } else if (cl->last->opcode == TFTP_OPCODE_ERROR) {
+        printf("sent ERROR code [%hu]\n", cl->last->error.nerror);
+    }
+
+    if (cl->state == ERROR) {
+        cl->is_active = 0;
+        return;
+    }
+
+    if (cl->state == RETRY) {
+        cl->nrep++;
+        if (cl->nrep >= TFTP_MAX_ATTEMPTS) {
+            printf("Attempts limit exceeded\n");
+            cl->is_active = 0;
+        }
+    }
+
+    if (cl->state == TIMEOUT) {
+        cl->nout++;
+        if (cl->nout >= TFTP_MAX_ATTEMPTS) {
+            printf("Attempts limit exceeded\n");
+            cl->is_active = 0;
+        }
+    }
+
+    gettimeofday(&cl->sent_at, NULL);
+    cl->state = WAIT;
 }

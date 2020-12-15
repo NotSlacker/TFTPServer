@@ -7,13 +7,13 @@
 #include <string.h>
 
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/poll.h>
+#include <sys/time.h>
+#include <poll.h>
+#include <time.h>
 #include <unistd.h>
-
-#include "packet.h"
-#include "transfer.h"
 
 #define SERVER_DEFAULT_PORT 11111
 

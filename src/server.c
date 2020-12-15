@@ -1,170 +1,102 @@
-#include "tftp.h"
+#include "transfer.h"
 
-int server_send(int sock_fd, struct sockaddr *client_addr, packet_t *packet) {
-    FILE *file_h;
+void listen_loop(int port) {
+    size_t off = 0;
+    size_t nclient = 0;
+    client_t *client[TFTP_MAX_CLIENTS] = { NULL };
 
-    if (strncmp(packet->read.mode, TFTP_MODE_OCTET, MAX_MODE_SIZE) != 0 &&
-        strncmp(packet->read.mode, TFTP_MODE_NETASCII, MAX_MODE_SIZE) != 0) {
-        send_error(sock_fd, client_addr, TFTP_ERROR_ILLEGAL_OPERATION, "Unsupported mode");
-        return 0;
-    }
+    int sv_fd;
+    struct sockaddr_in sv_addr;
 
-    if (access(packet->read.filename, F_OK) == 0) {
-        if ((file_h = fopen(packet->read.filename, "rb")) == NULL) {
-            send_error(sock_fd, client_addr, TFTP_ERROR_ACCESS_VIOLATION, strerror(errno));
-            return 0;
-        }
-    } else {
-        send_error(sock_fd, client_addr, TFTP_ERROR_FILE_NOT_FOUND, "File not found");
-        return 0;
-    }
-
-    int result = send_file(sock_fd, client_addr, file_h, packet->read.mode);
-
-    fclose(file_h);
-    return result;
-}
-
-int server_recieve(int sock_fd, struct sockaddr *client_addr, packet_t *packet) {
-    FILE *file_h;
-
-    if (strncmp(packet->write.mode, TFTP_MODE_OCTET, MAX_MODE_SIZE) != 0 &&
-        strncmp(packet->write.mode, TFTP_MODE_NETASCII, MAX_MODE_SIZE) != 0) {
-        send_error(sock_fd, client_addr, TFTP_ERROR_ILLEGAL_OPERATION, "Unsupported mode");
-        return 0;
-    }
-
-    if (access(packet->write.filename, F_OK) != 0) {
-        if ((file_h = fopen(packet->read.filename, "wb")) == NULL) {
-            if (errno == ENOMEM)
-                send_error(sock_fd, client_addr, TFTP_ERROR_DISK_FULL, strerror(errno));
-            else
-                send_error(sock_fd, client_addr, TFTP_ERROR_ACCESS_VIOLATION, strerror(errno));
-            return 0;
-        }
-    } else {
-        send_error(sock_fd, client_addr, TFTP_ERROR_FILE_ALREADY_EXISTS, "File already exists");
-        return 0;
-    }
-
-    send_ack(sock_fd, client_addr, 0);
-
-    int result = recv_file(sock_fd, client_addr, file_h, packet->write.mode);
-    
-    fclose(file_h);
-    return result;
-}
-
-static unsigned int child_counter = 0;
-
-void process_child(struct sockaddr client_addr, packet_t *packet) {
-    if (packet == NULL)
+    if ((sv_fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, IPPROTO_UDP)) < 0) {
+        perror("listen_loop: socket");
         return;
-
-    int is_success = 1;
-    int child_sock_fd = connect_socket_on(0);
-
-    switch (packet->opcode) {
-    case TFTP_OPCODE_RRQ:
-        printf("Processng RRQ request for \"%s\"...\n", packet->read.filename);
-        is_success = server_send(child_sock_fd, &client_addr, packet);
-        break;
-    case TFTP_OPCODE_WRQ:
-        printf("Processng WRQ request for \"%s\"...\n", packet->write.filename);
-        is_success = server_recieve(child_sock_fd, &client_addr, packet);
-        break;
-    default:
-        is_success = send_error(child_sock_fd, &client_addr, TFTP_ERROR_ILLEGAL_OPERATION, "Unexpected Packet");
-        break;
     }
 
-    if (is_success == 0)
-        printf("Failed to handle request\n");
-    else
-        printf("Done processing request\n");
-}
+    bzero((char *)&sv_addr, sizeof(sv_addr));
 
-void transfer_loop(int sock_fd) {
-    int recv_size;
-    char buffer[BUFFER_SIZE];
+    sv_addr.sin_family = AF_INET;
+    sv_addr.sin_port = htons(port);
+    sv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    struct sockaddr client_addr;
-    size_t client_size = sizeof(client_addr);
-    
-    packet_t packet;
-    
-    pid_t fork_id;
+    if (bind(sv_fd, (struct sockaddr *)&sv_addr, sizeof(sv_addr)) < 0) {
+        perror("listen_loop: bind");
+        return;
+    }
 
-    printf("Server is running\n");
+    printf("server listening...\n");
 
-    struct pollfd pfd[1] = { { sock_fd, POLLIN, 0 } };
+    int rpoll = 0;
 
-    while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
+    struct pollfd pfd[1];
+    bzero(pfd, sizeof(pfd));
 
-        if (poll(pfd, 1, -1) > 0) {
-            recv_size = recvfrom(sock_fd, buffer, BUFFER_SIZE, 0, &client_addr, (socklen_t *)&client_size);
+    pfd[0].fd = sv_fd;
 
-            if (recv_size < 0) {
-                perror("Error in recvfrom:");
-                exit(1);
-            }
-
-            if (recv_size == 0) {
-                printf("Socket closed\n");
-                exit(0);
-            }
-
-            if (child_counter < TFTP_MAX_CLIENTS) {
-                deserialize_packet(buffer, recv_size, &packet);
-                fork_id = fork();
-            } else {
-                send_error(sock_fd, &client_addr, TFTP_ERROR_NOT_DEFINED, "Too many clients");
-                continue;
-            }
-
-            if (fork_id < 0) {
-                send_error(sock_fd, &client_addr, TFTP_ERROR_NOT_DEFINED, "Unable to handle request");
-                exit(1);
-            } else if (fork_id == 0) {
-                close(sock_fd);
-                
-                if (DEBUG)
-                    print_packet(&packet);
-
-                child_counter++;
-                process_child(client_addr, &packet);
-                child_counter--;
-
-                exit(0);
-            }
+    while (1) {        
+        if (nclient == 0) {
+            pfd[0].events = POLLIN;
         } else {
-            perror("Error in poll");
-            exit(1);
+            pfd[0].events = POLLIN | POLLOUT;
+        }
+
+        if ((rpoll = poll(pfd, 1, -1)) < 0) {
+            perror("listen_loop: poll");
+            break;
+        }
+
+        if (pfd[0].revents & POLLIN) {
+            handle_recv(sv_fd, client, &nclient);
+        }
+        
+        if (pfd[0].revents & POLLOUT) {
+            for (size_t i = 0; i < nclient; i++) {
+                handle_send(sv_fd, client[i]);
+            }
+        }
+        
+        for (size_t i = 0; i < nclient; i++) {
+            check_timeout(client[i]);
+        }
+
+        off = 0;
+        for (size_t i = 0; i < nclient; i++) {
+            if (!client[i]->is_active) {
+                cl_delete(client[i]);
+                printf("removed inactive client\n");
+                off++;
+            } else if (off > 0) {
+                client[i - off] = client[i];
+            }
+        }
+        nclient -= off;
+        if (off) {
+            printf("%lu active clients so far\n", nclient);
         }
     }
 
-    close(sock_fd);
+    close(sv_fd);
 }
 
 int main(int argc, char *argv[]) {
     int port = 1;
     
-    if (argc == 1)
+    if (argc == 1) {
         port = SERVER_DEFAULT_PORT;
+    }
 
-    if (argc == 2)
+    if (argc == 2) {
         port = atoi(argv[1]);
+    }
     
     if (argc > 2) {
-        printf("Usage: %s [port]\n", argv[0]);
+        printf("usage: %s [port]\n", argv[0]);
         return 0;
     }
 
-    printf("Using port: %d\n", port);
+    printf("started on port: %d\n", port);
 
-    int sock_fd = connect_socket_on(port);
-    transfer_loop(sock_fd);
+    listen_loop(port);
 
     return 0;
 }

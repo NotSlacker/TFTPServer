@@ -1,4 +1,23 @@
-#include "tftp.h"
+#include "packet.h"
+
+void make_data(packet_t *packet, char *buffer, size_t nbuffer, uint16_t nblock) {
+    packet->opcode = TFTP_OPCODE_DATA;
+    packet->data.nblock = nblock;
+    packet->data.nbuffer = nbuffer;
+    memcpy(packet->data.buffer, buffer, nbuffer);
+}
+
+void make_ack(packet_t *packet, uint16_t nblock) {
+    packet->opcode = TFTP_OPCODE_ACK;
+    packet->ack.nblock = nblock;
+}
+
+void make_error(packet_t *packet, uint16_t nerror, char *message) {
+    packet->opcode = TFTP_OPCODE_ERROR;
+    packet->error.nerror = nerror;
+    strncpy(packet->error.message, message, MAX_STRING_SIZE);
+}
+
 
 packet_t *deserialize_packet(char *buffer, size_t buffer_size, packet_t *packet) {
     if (packet == NULL || buffer_size < 4)
@@ -20,17 +39,17 @@ packet_t *deserialize_packet(char *buffer, size_t buffer_size, packet_t *packet)
         break;
     case TFTP_OPCODE_DATA:
         memcpy(&temp, buffer + 2, 2);
-        packet->data.block_num = ntohs(temp);
-        packet->data.data_size = buffer_size - 4;
-        memcpy(packet->data.data, buffer + 4, packet->data.data_size);
+        packet->data.nblock = ntohs(temp);
+        packet->data.nbuffer = buffer_size - 4;
+        memcpy(packet->data.buffer, buffer + 4, packet->data.nbuffer);
         break;
     case TFTP_OPCODE_ACK:
         memcpy(&temp, buffer + 2, 2);
-        packet->ack.block_num = ntohs(temp);
+        packet->ack.nblock = ntohs(temp);
         break;
     case TFTP_OPCODE_ERROR:
         memcpy(&temp, buffer + 2, 2);
-        packet->error.ercode = ntohs(temp);
+        packet->error.nerror = ntohs(temp);
         strncpy(packet->error.message, buffer + 4, MAX_STRING_SIZE);
         break;
     default:
@@ -51,17 +70,17 @@ size_t serialize_packet(const packet_t *packet, char *buffer) {
 
     switch (packet->opcode) {
     case TFTP_OPCODE_DATA:
-        temp = htons(packet->data.block_num);
+        temp = htons(packet->data.nblock);
         memcpy(buffer + 2, &temp, 2);
-        memcpy(buffer + 4, packet->data.data, packet->data.data_size);
-        n += packet->data.data_size;
+        memcpy(buffer + 4, packet->data.buffer, packet->data.nbuffer);
+        n += packet->data.nbuffer;
         break;
     case TFTP_OPCODE_ACK:
-        temp = htons(packet->ack.block_num);
+        temp = htons(packet->ack.nblock);
         memcpy(buffer + 2, &temp, 2);
         break;
     case TFTP_OPCODE_ERROR:
-        temp = htons(packet->error.ercode);
+        temp = htons(packet->error.nerror);
         memcpy(buffer + 2, &temp, 2);
         strncpy(buffer + 4, packet->error.message, MAX_STRING_SIZE);
         n += strlen(buffer + 4) + 1;
@@ -95,16 +114,16 @@ void print_packet(packet_t *packet) {
         break;
     case TFTP_OPCODE_DATA:
         printf("DATA\n");
-        printf("Block = %u\n", packet->data.block_num);
-        printf("DataSize = %lu\n", packet->data.data_size);
+        printf("Block = %u\n", packet->data.nblock);
+        printf("DataSize = %lu\n", packet->data.nbuffer);
         break;
     case TFTP_OPCODE_ACK:
         printf("ACK\n");
-        printf("Block = %u\n", packet->ack.block_num);
+        printf("Block = %u\n", packet->ack.nblock);
         break;
     case TFTP_OPCODE_ERROR:
         printf("ERROR\n");
-        printf("ErrorCode = %u\n", packet->error.ercode);
+        printf("ErrorCode = %u\n", packet->error.nerror);
         printf("ErrorMessage = %s\n", packet->error.message);
         break;
     default:
@@ -121,7 +140,7 @@ void print_error(packet_t *packet) {
 
     printf("Error: [");
 
-    switch (packet->error.ercode) {
+    switch (packet->error.nerror) {
     case TFTP_ERROR_NOT_DEFINED:
         printf("Not Defined");
         break;
@@ -147,7 +166,7 @@ void print_error(packet_t *packet) {
         printf("No Such User");
         break;
     default:
-        printf("%u", packet->error.ercode);
+        printf("%u", packet->error.nerror);
         break;
     }
 

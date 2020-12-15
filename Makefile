@@ -1,12 +1,12 @@
-cfiles = src/packet.c src/transfer.c src/server.c
-flags = -Wall -Wextra
+CFILES = src/packet.c src/client.c src/transfer.c src/server.c
+FLAGS = -Wall -Wextra
 
 default: all
 
 all: server
 
 server:
-	${CC} ${flags} -o tftps ${cfiles}
+	${CC} ${FLAGS} -o tftps ${CFILES}
 
 clean:
 	rm tftps

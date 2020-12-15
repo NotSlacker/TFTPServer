@@ -1,6 +1,8 @@
 #ifndef PACKET_H
 #define PACKET_H
 
+#include "tftp.h"
+
 #define MAX_MODE_SIZE 8
 #define MAX_STRING_SIZE 512
 #define MAX_DATA_SIZE 512
@@ -21,35 +23,39 @@
 #define TFTP_ERROR_NO_SUCH_USER 7
 
 typedef struct {
-    char filename[MAX_STRING_SIZE + 1];
-    char mode[MAX_MODE_SIZE + 1];
-} RRQ, WRQ;
+    char filename[MAX_STRING_SIZE];
+    char mode[MAX_MODE_SIZE];
+} rrq_t, wrq_t;
 
 typedef struct {
-    uint16_t block_num;
-    size_t data_size;
-    char data[MAX_DATA_SIZE];
-} DATA;
+    uint16_t nblock;
+    size_t nbuffer;
+    char buffer[MAX_DATA_SIZE];
+} data_t;
 
 typedef struct {
-    uint16_t block_num;
-} ACK;
+    uint16_t nblock;
+} ack_t;
 
 typedef struct {
-    uint16_t ercode;
-    char message[MAX_STRING_SIZE + 1];
-} ERROR;
+    uint16_t nerror;
+    char message[MAX_STRING_SIZE];
+} error_t;
 
 typedef struct {
     uint16_t opcode;
     union {
-        RRQ read;
-        WRQ write;
-        DATA data;
-        ACK ack;
-        ERROR error;
+        rrq_t read;
+        wrq_t write;
+        data_t data;
+        ack_t ack;
+        error_t error;
     };
 } packet_t;
+
+void make_data(packet_t *packet, char *buffer, size_t nbuffer, uint16_t nblock);
+void make_ack(packet_t *packet, uint16_t nblock);
+void make_error(packet_t *packet, uint16_t nerror, char *message);
 
 packet_t *deserialize_packet(char *buffer, size_t buffer_size, packet_t *packet);
 size_t serialize_packet(const packet_t *packet, char *buffer);
