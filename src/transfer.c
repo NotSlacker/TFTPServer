@@ -205,7 +205,7 @@ void handle_recv(int sock_fd, client_t *client[], size_t *nclient) {
 }
 
 void handle_send(int sock_fd, client_t *cl) {
-    if (cl->is_active == 0 || cl->state == WAIT) {
+    if (!cl->is_active || cl->state == WAIT) {
         return;
     }
 

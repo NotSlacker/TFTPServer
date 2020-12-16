@@ -61,7 +61,7 @@ void listen_loop(int port) {
 
         off = 0;
         for (size_t i = 0; i < nclient; i++) {
-            if (!client[i]->is_active) {
+            if (client[i]->is_active == 0) {
                 cl_delete(client[i]);
                 printf("removed inactive client\n");
                 off++;

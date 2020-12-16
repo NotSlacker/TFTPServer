@@ -54,7 +54,7 @@ void cl_delete(client_t *cl) {
 }
 
 void check_timeout(client_t *cl) {
-    if (cl == NULL || !cl->is_active) {
+    if (cl == NULL || !cl->is_active || cl->state != WAIT) {
         return;
     }
 
