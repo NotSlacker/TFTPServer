@@ -16,4 +16,4 @@ make
 ```
 
 ## Interaction example
-  ![](https://gfycat.com/canineimperfectamericanredsquirrel.gif)
+  ![](https://giant.gfycat.com/BogusCanineDrake.webm)
