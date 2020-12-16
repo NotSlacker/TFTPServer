@@ -16,4 +16,4 @@ make
 ```
 
 ## Interaction example
-  ![](https://github.com/NotSlacker/tftp-server/blob/master/tftp-project%20interaction-example.gif)
+  ![](https://github.com/NotSlacker/tftp-server/blob/master/tftp-project-interaction-example.gif)
