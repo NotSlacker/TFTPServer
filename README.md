@@ -16,4 +16,4 @@ make
 ```
 
 ## Interaction example
-  ![image](https://media.giphy.com/media/ekuVhahlCeQjiW2TAi/giphy.gif)
+  ![](https://media.giphy.com/media/N1AK2rI7MIOw70T3Wl/giphy.gif)
