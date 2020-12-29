@@ -14,6 +14,3 @@ Open the project folder and use the following code to build and run the server o
 make
 ./tftps 10118
 ```
-
-## Interaction example
-  ![](https://github.com/NotSlacker/tftp-server/blob/master/tftp-project-interaction-example.gif)
