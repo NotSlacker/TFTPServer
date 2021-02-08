@@ -2,8 +2,8 @@
 
 void listen_loop(int port) {
     size_t off = 0;
-    size_t nclient = 0;
-    client_t *client[TFTP_MAX_CLIENTS] = { NULL };
+    size_t nclients = 0;
+    client_t *client[MAX_CLIENTS] = { NULL };
 
     int sv_fd;
     struct sockaddr_in sv_addr;
@@ -13,7 +13,7 @@ void listen_loop(int port) {
         return;
     }
 
-    bzero((char *)&sv_addr, sizeof(sv_addr));
+    memset((char *)&sv_addr, 0, sizeof(sv_addr));
 
     sv_addr.sin_family = AF_INET;
     sv_addr.sin_port = htons(port);
@@ -26,52 +26,46 @@ void listen_loop(int port) {
 
     printf("server listening...\n");
 
-    int rpoll = 0;
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
 
-    struct pollfd pfd[1];
-    bzero(pfd, sizeof(pfd));
-
-    pfd[0].fd = sv_fd;
+    pfd.fd = sv_fd;
 
     while (1) {        
-        if (nclient == 0) {
-            pfd[0].events = POLLIN;
-        } else {
-            pfd[0].events = POLLIN | POLLOUT;
-        }
+        pfd.events = nclients == 0 ? POLLIN : POLLIN | POLLOUT;
 
-        if ((rpoll = poll(pfd, 1, -1)) < 0) {
+        if (poll(&pfd, 1, -1) < 0) {
             perror("listen_loop: poll");
             break;
         }
 
-        if (pfd[0].revents & POLLIN) {
-            handle_recv(sv_fd, client, &nclient);
+        if (pfd.revents & POLLIN) {
+            handle_recv(sv_fd, client, &nclients);
         }
         
-        if (pfd[0].revents & POLLOUT) {
-            for (size_t i = 0; i < nclient; i++) {
+        if (pfd.revents & POLLOUT) {
+            for (size_t i = 0; i < nclients; i++) {
                 handle_send(sv_fd, client[i]);
             }
         }
         
-        for (size_t i = 0; i < nclient; i++) {
+        for (size_t i = 0; i < nclients; i++) {
             check_timeout(client[i]);
         }
 
         off = 0;
-        for (size_t i = 0; i < nclient; i++) {
-            if (client[i]->is_active == 0) {
-                cl_delete(client[i]);
-                printf("removed inactive client\n");
+        for (size_t i = 0; i < nclients; i++) {
+            if (client[i]->state == INACTIVE) {
+                client_free(client[i]);
                 off++;
             } else if (off > 0) {
                 client[i - off] = client[i];
             }
         }
-        nclient -= off;
-        if (off) {
-            printf("%lu active clients so far\n", nclient);
+        
+        if (off > 0) {
+            nclients -= off;
+            printf("removed inactive clients: %lu active in total\n", nclients);
         }
     }
 

@@ -1,257 +1,225 @@
 #include "transfer.h"
 
 size_t read_data(char *buffer, size_t n, client_t *cl) {
-    bzero(buffer, n);
-
-    if (cl->mode == 0)
+    if (cl->mode == OCTET) {
         return fread(buffer, 1, n, cl->file);
-
-    int curr;
-    size_t total = 0;
-    
-    while (total < n) {
-        if (cl->is_tail) {
-            curr = cl->prev == '\n' ? '\n' : '\0';
-            cl->is_tail = 0;
-        } else {
-            curr = fgetc(cl->file);
-            
-            if (curr == EOF)
-                break;
-            
-            if (curr == '\n' || curr == '\r') {
-                cl->prev = curr;
-                curr = '\r';
-                cl->is_tail = 1;
-            }
-        }
-
-        buffer[total++] = (char)curr;
     }
-    
-    return total;
+
+    // Replace "\n" with "\r\n" and "\r" with "\r\0"
+    if (cl->mode == NETASCII) {
+        int cur;
+        size_t pos = 0;
+        
+        while (pos < n) {
+            if (cl->is_tail) {
+                cur = (cl->prev_char == '\n') ? '\n' : '\0';
+                cl->is_tail = 0;
+            } else {
+                cur = fgetc(cl->file);
+                
+                if (cur == EOF)
+                    break;
+                
+                if (cur == '\n' || cur == '\r') {
+                    cl->prev_char = cur;
+                    cur = '\r';
+                    cl->is_tail = 1;
+                }
+            }
+
+            buffer[pos++] = (char)cur;
+        }
+        
+        return pos;
+    }
+
+    return 0;
 }
 
 size_t write_data(char *buffer, size_t n, client_t *cl) {
-    if (cl->mode == 0)
+    if (cl->mode == OCTET) {
         return fwrite(buffer, 1, n, cl->file);
-
-    size_t pos = 0;
-    int skip = 0;
-
-    while (pos < n) {
-        if (cl->prev == '\r') {
-            if (buffer[pos] == '\n')
-                fseek(cl->file, -1, SEEK_CUR);
-            else if (buffer[pos] == '\0')
-                skip = 1;
-        }
-        
-        if (!skip)
-            fputc(buffer[pos], cl->file);
-        else
-            skip = 0;
-
-        cl->prev = buffer[pos++];
     }
-    
-    return pos;
+
+    // Replace "\r\n" with "\n" and "\r\0" with "\r"
+    if (cl->mode == NETASCII) {
+        size_t pos = 0;
+        
+        while (pos < n) {
+            if (cl->prev_char == '\r' && buffer[pos] == '\n') {
+                fseek(cl->file, -1, SEEK_CUR);
+            }
+            
+            if (cl->prev_char != '\r' || buffer[pos] != '\0') {
+                fputc(buffer[pos], cl->file);
+            }
+
+            cl->prev_char = buffer[pos++];
+        }
+
+        return pos;
+    }
+
+    return 0;
 }
 
-void handle_recv(int sock_fd, client_t *client[], size_t *nclient) {
-    printf("receiving... ");
-
+void handle_recv(int sock_fd, client_t *client[], size_t *nclients) {
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
 
-    size_t nbuffer = 0;
+    size_t buffer_size = 0;
     char buffer[BUFFER_SIZE];
 
-    int nrecv;
-    if ((nrecv = recvfrom(sock_fd, buffer, BUFFER_SIZE, MSG_DONTWAIT, (struct sockaddr *)&addr, &addrlen)) < 0) {
+    int nrecv = recvfrom(sock_fd, buffer, BUFFER_SIZE, MSG_DONTWAIT, (struct sockaddr *)&addr, &addrlen);
+    if (nrecv < 0) {
         perror("handle_recv: recvfrom");
         return;
     }
 
-    client_t *cl;
-    if ((cl = cl_find(addr, client, *nclient)) == NULL) {
-        if (*nclient < TFTP_MAX_CLIENTS) {
-            if ((cl = cl_create(addr)) != NULL) {
-                client[*nclient] = cl;
-                *nclient += 1;
-                printf("added active client\n");
-                printf("%lu active clients so far\n", *nclient);
+    client_t *cl = client_find(addr, client, *nclients);
+
+    // Handling a new client
+    if (cl == NULL) {
+        if (*nclients < MAX_CLIENTS) {
+            if ((cl = client_init(addr)) != NULL) {
+                client[*nclients] = cl;
+                *nclients += 1;
+                printf("added new client: %lu active in total\n", *nclients);
             }
+        } else {
+            printf("limit of active clients reached\n");
+            return;
         }
     }
+
+    buffer_size = nrecv;
 
     packet_t req;
-    nbuffer = nrecv;
-
-    if (deserialize_packet(buffer, nbuffer, &req) == NULL) {
+    if (deserialize_packet(buffer, buffer_size, &req) == NULL) {
         return;
     }
 
-    if (req.opcode == TFTP_OPCODE_RRQ && cl->is_first) {
-        if (strncasecmp(req.read.mode, TFTP_MODE_OCTET, MAX_MODE_SIZE) != 0 &&
-            strncasecmp(req.read.mode, TFTP_MODE_NETASCII, MAX_MODE_SIZE) != 0) {
-            make_error(cl->last, TFTP_ERROR_ILLEGAL_OPERATION, "unsupported mode");
-            cl->state = ERROR;
+    if (req.opcode == RRQ && cl->state == NEW) {
+        printf("received READ request for file [%s]\n", req.read.file_name);
+        cl->state = WAIT;
+
+        if ((cl->mode = convert_mode(req.read.mode)) == UNKNOWN) {
+            make_error(cl->last, ILLEGAL_OPERATION, "unsupported mode");
             return;
         }
 
-        if (access(req.read.filename, F_OK) == 0) {
-            if ((cl->file = fopen(req.read.filename, "rb")) == NULL) {
-                if (errno == ENOMEM) {
-                    make_error(cl->last, TFTP_ERROR_DISK_FULL, strerror(errno));
-                } else {
-                    make_error(cl->last, TFTP_ERROR_ACCESS_VIOLATION, strerror(errno));
-                }
-                cl->state = ERROR;
-                return;
-            }
-        } else {
-            make_error(cl->last, TFTP_ERROR_FILE_NOT_FOUND, "file not found");
-            cl->state = ERROR;
+        if (access(req.read.file_name, F_OK) != 0) {
+            make_error(cl->last, FILE_NOT_FOUND, "file not found");
             return;
         }
 
-        cl->mode = !strcmp(req.read.mode, "netascii");
-        nbuffer = read_data(buffer, MAX_DATA_SIZE, cl);
-
-        make_data(cl->last, buffer, nbuffer, 1);
-        cl->nrep = 0;
-        cl->nout = 0;
-        cl->is_first = 0;
-        cl->state = READY;
-    } else if (req.opcode == TFTP_OPCODE_WRQ && cl->is_first) {
-        if (strncasecmp(req.write.mode, TFTP_MODE_OCTET, MAX_MODE_SIZE) != 0 &&
-            strncasecmp(req.write.mode, TFTP_MODE_NETASCII, MAX_MODE_SIZE) != 0) {
-            make_error(cl->last, TFTP_ERROR_ILLEGAL_OPERATION, "unsupported mode");
-            cl->state = ERROR;
-            return;
-        }
-        if (access(req.write.filename, F_OK) != 0) {
-            if ((cl->file = fopen(req.write.filename, "wb")) == NULL) {
-                if (errno == ENOMEM) {
-                    make_error(cl->last, TFTP_ERROR_DISK_FULL, strerror(errno));
-                } else {
-                    make_error(cl->last, TFTP_ERROR_ACCESS_VIOLATION, strerror(errno));
-                }
-                cl->state = ERROR;
-                return;
-            }
-        } else {
-            make_error(cl->last, TFTP_ERROR_FILE_ALREADY_EXISTS, "file already exists");
-            cl->state = ERROR;
+        if ((cl->file = fopen(req.read.file_name, "rb")) == NULL) {
+            make_error(cl->last, ACCESS_VIOLATION, strerror(errno));
             return;
         }
 
-        cl->mode = !strcmp(req.write.mode, "netascii");
+        buffer_size = read_data(buffer, MAX_DATA_SIZE, cl);
+        make_data(cl->last, buffer, buffer_size, 1);
+        cl->is_last = buffer_size < MAX_DATA_SIZE;
+    } else if (req.opcode == WRQ && cl->state == NEW) {
+        printf("received WRITE request for file [%s]\n", req.read.file_name);
+        cl->state = WAIT;
+
+        if ((cl->mode = convert_mode(req.write.mode)) == UNKNOWN) {
+            make_error(cl->last, ILLEGAL_OPERATION, "unsupported mode");
+            return;
+        }
+
+        if (access(req.write.file_name, F_OK) == 0) {
+            make_error(cl->last, FILE_ALREADY_EXISTS, "file already exists");
+            return;
+        }
+
+        if ((cl->file = fopen(req.write.file_name, "wb")) == NULL) {
+            make_error(cl->last, errno == ENOMEM ? DISK_FULL : ACCESS_VIOLATION, strerror(errno));
+            return;
+        }
 
         make_ack(cl->last, 0);
-        cl->nrep = 0;
-        cl->nout = 0;
-        cl->is_first = 0;
-        cl->state = READY;
-    } else if (req.opcode == TFTP_OPCODE_DATA && !cl->is_first) {
-        printf("received DATA block [%hu] of %lu bytes\n", req.data.nblock, req.data.nbuffer);
-        if (req.data.nblock == cl->last->ack.nblock + 1) {
-            nbuffer = write_data(req.data.buffer, req.data.nbuffer, cl);
-            cl->is_last = req.data.nbuffer < MAX_DATA_SIZE;
-            make_ack(cl->last, req.data.nblock);
-            cl->nrep = 0;
+    } else if (req.opcode == DATA && cl->state != NEW) {
+        printf("received DATA block [%hu] of %lu bytes\n", req.data.block_id, req.data.buffer_size);
+        cl->state = WAIT;
+
+        if (req.data.block_id == cl->last->ack.block_id + 1) {
+            buffer_size = write_data(req.data.buffer, req.data.buffer_size, cl);
+            make_ack(cl->last, req.data.block_id);
+            cl->is_last = req.data.buffer_size < MAX_DATA_SIZE;
+            cl->nrep = cl->nout = 0;
+        } else if (req.data.block_id == cl->last->ack.block_id) {
+            cl->nrep++;
             cl->nout = 0;
-            cl->state = READY;
-        } else if (req.data.nblock == cl->last->ack.nblock) {
-            cl->nout = 0;
-            cl->state = RETRY;
         } else {
-            make_error(cl->last, TFTP_ERROR_UNKNOWN_TRANSFER_ID, "wrong block number");
-            cl->state = ERROR;
-            return;
+            make_error(cl->last, UNKNOWN_TRANSFER_ID, "wrong block number");
         }
-    } else if (req.opcode == TFTP_OPCODE_ACK && !cl->is_first) {
-        printf("received ACK block [%hu]\n", req.ack.nblock);
+    } else if (req.opcode == ACK && cl->state != NEW) {
+        printf("received ACK block [%hu]\n", req.ack.block_id);
+        cl->state = WAIT;
+
         if (cl->is_last) {
-            cl->is_active = 0;
+            cl->state = INACTIVE;
             return;
         }
-        if (req.ack.nblock == cl->last->data.nblock) {
-            nbuffer = read_data(buffer, MAX_DATA_SIZE, cl);
-            cl->is_last = nbuffer < MAX_DATA_SIZE;
-            make_data(cl->last, buffer, nbuffer, req.ack.nblock + 1);
-            cl->nrep = 0;
+
+        if (req.ack.block_id == cl->last->data.block_id) {
+            buffer_size = read_data(buffer, MAX_DATA_SIZE, cl);
+            make_data(cl->last, buffer, buffer_size, req.ack.block_id + 1);
+            cl->is_last = buffer_size < MAX_DATA_SIZE;
+            cl->nrep = cl->nout = 0;
+        } else if (req.ack.block_id + 1 == cl->last->data.block_id) {
+            cl->nrep++;
             cl->nout = 0;
-            cl->state = READY;
-        } else if (req.ack.nblock + 1 == cl->last->data.nblock) {
-            cl->nout = 0;
-            cl->state = RETRY;
         } else {
-            make_error(cl->last, TFTP_ERROR_UNKNOWN_TRANSFER_ID, "wrong block number");
-            cl->state = ERROR;
-            return;
+            make_error(cl->last, UNKNOWN_TRANSFER_ID, "wrong block number");
         }
-    } else if (req.opcode == TFTP_OPCODE_ERROR && !cl->is_first) {
-        printf("received ERROR code [%hu]\n", req.error.nerror);
+    } else if (req.opcode == ERROR && cl->state != NEW) {
+        printf("received ");
         print_error(&req);
-        cl->is_active = 0;
-        return;
+        cl->state = INACTIVE;
     } else {
-        make_error(cl->last, TFTP_ERROR_ILLEGAL_OPERATION, "unknown operation");
-        cl->state = ERROR;
-        return;
+        cl->state = WAIT;
+        make_error(cl->last, ILLEGAL_OPERATION, "unknown operation");
     }
 }
 
 void handle_send(int sock_fd, client_t *cl) {
-    if (!cl->is_active || cl->state == WAIT) {
+    if (cl->state != WAIT) {
+        return;
+    }
+    
+    if (cl->nrep >= MAX_ATTEMPTS || cl->nout >= MAX_ATTEMPTS) {
+        printf("attempts limit exceeded\n");
+        cl->state = INACTIVE;
         return;
     }
 
-    printf("sending... ");
-
-    size_t nbuffer = 0;
+    size_t buffer_size = 0;
     char buffer[BUFFER_SIZE];
 
-    nbuffer = serialize_packet(cl->last, buffer);
-    if (sendto(sock_fd, buffer, nbuffer, 0, (struct sockaddr *)&cl->addr, cl->addrlen) < 0) {
+    buffer_size = serialize_packet(cl->last, buffer);
+    if (sendto(sock_fd, buffer, buffer_size, 0, (struct sockaddr *)&cl->addr, cl->addrlen) < 0) {
         perror("handle_send: sendto");
         return;
     }
 
-    if (cl->last->opcode == TFTP_OPCODE_DATA) {
-        printf("sent DATA block [%hu] of %lu bytes\n", cl->last->data.nblock, cl->last->data.nbuffer);
-    } else if (cl->last->opcode == TFTP_OPCODE_ACK) {
-        printf("sent ACK block [%hu]\n", cl->last->ack.nblock);
+    if (cl->last->opcode == DATA) {
+        printf("sent DATA block [%hu] of %lu bytes\n", cl->last->data.block_id, cl->last->data.buffer_size);
+    } else if (cl->last->opcode == ACK) {
+        printf("sent ACK block [%hu]\n", cl->last->ack.block_id);
         if (cl->is_last) {
-            cl->is_active = 0;
+            cl->state = INACTIVE;
+            return;
         }
-    } else if (cl->last->opcode == TFTP_OPCODE_ERROR) {
-        printf("sent ERROR code [%hu]\n", cl->last->error.nerror);
-    }
-
-    if (cl->state == ERROR) {
-        cl->is_active = 0;
+    } else if (cl->last->opcode == ERROR) {
+        printf("sent ERROR code [%hu]\n", cl->last->error.error_id);
+        cl->state = INACTIVE;
         return;
     }
 
-    if (cl->state == RETRY) {
-        cl->nrep++;
-        if (cl->nrep >= TFTP_MAX_ATTEMPTS) {
-            printf("Attempts limit exceeded\n");
-            cl->is_active = 0;
-        }
-    }
-
-    if (cl->state == TIMEOUT) {
-        cl->nout++;
-        if (cl->nout >= TFTP_MAX_ATTEMPTS) {
-            printf("Attempts limit exceeded\n");
-            cl->is_active = 0;
-        }
-    }
-
     gettimeofday(&cl->sent_at, NULL);
-    cl->state = WAIT;
+    cl->state = SENT;
 }
