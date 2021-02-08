@@ -68,7 +68,7 @@ void check_timeout(client_t *cl) {
     // Time since the last block was sent to the client in us
     unsigned long long elapsed = (now.tv_sec - cl->sent_at.tv_sec) * 1000000ull + (now.tv_usec - cl->sent_at.tv_usec);
 
-    if (elapsed > ATTEMPT_TIMEOUT * 1000ull) {
+    if (elapsed > ATTEMPT_TIMEOUT_MS * 1000ull) {
         cl->nrep = 0;
         cl->nout++;
         cl->state = WAIT;

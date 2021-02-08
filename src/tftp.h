@@ -6,8 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <assert.h>
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -27,7 +25,7 @@
 #define MAX_CLIENTS 100
 #define MAX_ATTEMPTS 5
 
-#define ATTEMPT_TIMEOUT 3000ull
+#define ATTEMPT_TIMEOUT_MS 3000ull
 
 #define STR_MODE_OCTET "octet"
 #define STR_MODE_NETASCII "netascii"
